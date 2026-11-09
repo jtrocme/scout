@@ -1,0 +1,14 @@
+# Riot API key — never commit it
+key.txt
+*.key
+.env
+
+# Local data: API cache, generated reports, league pool
+cache/
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
