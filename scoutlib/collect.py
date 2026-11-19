@@ -99,9 +99,28 @@ def collect_extra(client: RiotClient, static: Static, p: dict, start_time: int, 
     return p
 
 
+def find_by_puuid(client: RiotClient, puuid: str, old_id: str, progress: Progress) -> dict | None:
+    """Current account of a player already scouted. The PUUID never changes, so a
+    player who renamed is still found. None if the lookup fails (e.g. a key from
+    another Riot app, which encrypts PUUIDs differently)."""
+    try:
+        acc = client.account_by_puuid(puuid)
+    except RiotError as e:
+        if e.status in (401, 403, 429) or e.status >= 500:
+            raise
+        return None
+    if not acc or not acc.get("gameName"):
+        return None
+    new_id = f"{acc['gameName']}#{acc.get('tagLine', '')}"
+    if old_id and new_id.lower() != old_id.lower():
+        progress.log(f"{old_id} s'appelle maintenant {new_id}.")
+    return acc
+
+
 def collect(client: RiotClient, static: Static, roster: dict[str, str], days: int, max_games: int,
-            timelines: bool, progress: Progress) -> dict:
-    """roster: role -> 'Name#TAG'. Returns raw material for the analysis."""
+            timelines: bool, progress: Progress, puuids: dict[str, str] | None = None) -> dict:
+    """roster: role -> 'Name#TAG'. puuids: role -> PUUID when refreshing a report,
+    so renamed players are still found. Returns raw material for the analysis."""
     start_time = int(time.time()) - days * 86400
     players = {}
     for role in ROLES:
@@ -110,12 +129,14 @@ def collect(client: RiotClient, static: Static, roster: dict[str, str], days: in
             continue
         name, tag = parse_riot_id(rid)
         progress.log(f"Recherche de {name}#{tag}…")
-        try:
-            acc = client.account(name, tag)
-        except RiotError as e:
-            if e.status == 404:
-                raise ValueError(f"{name}#{tag} n'existe pas sur ce serveur")
-            raise
+        acc = find_by_puuid(client, puuids[role], rid, progress) if (puuids or {}).get(role) else None
+        if acc is None:
+            try:
+                acc = client.account(name, tag)
+            except RiotError as e:
+                if e.status == 404:
+                    raise ValueError(f"{name}#{tag} n'existe pas sur ce serveur")
+                raise
         puuid = acc["puuid"]
         players[role] = {
             "role": role,

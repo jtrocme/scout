@@ -148,7 +148,8 @@
     api("/api/reports").then((list) => {
       const el = document.getElementById("recent");
       if (!el) return;
-      el.innerHTML = list.length ? `<ul>${list.slice(0, 10).map(reportLi).join("")}</ul>` : `<p class="empty">Aucun rapport.</p>`;
+      el.innerHTML = list.length ? `<ul>${list.slice(0, 10).map((r) => reportLi(r, "refresh")).join("")}</ul>` : `<p class="empty">Aucun rapport.</p>`;
+      bindReportActions(el, () => {});
     }).catch(() => {});
     api(`/api/status?region=${last.region || "euw"}`).then((s) => {
       const el = document.getElementById("keystate");
@@ -158,10 +159,13 @@
     }).catch(() => {});
   }
 
-  const reportLi = (r, actions = false) => `<li class="${actions ? "with-actions" : ""}"><a href="#/r/${encodeURIComponent(r.file)}">
+  // actions: "" (none), "refresh" (compact, home page) or "all" (Rapports page)
+  const reportLi = (r, actions = "") => `<li class="${actions ? "with-actions" : ""}"><a href="#/r/${encodeURIComponent(r.file)}">
       <div class="t">${esc(r.team)}</div>
       <div class="s">${r.generated ? dateLong(r.generated) : ""} · ${esc((r.region || "").toUpperCase())} · ${esc((r.players || []).join(", "))}</div></a>
-      ${actions ? `<span class="row-actions"><button class="linklike" data-rename="${esc(r.file)}" data-team="${esc(r.team)}">Renommer</button>
+      ${actions === "refresh" ? `<button class="linklike icon" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}" title="Rafraîchir ce rapport" aria-label="Rafraîchir ${esc(r.team)}">↻</button>` : ""}
+      ${actions === "all" ? `<span class="row-actions"><button class="linklike" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}">Rafraîchir</button>
+        <button class="linklike" data-rename="${esc(r.file)}" data-team="${esc(r.team)}">Renommer</button>
         <button class="linklike danger" data-delete="${esc(r.file)}" data-team="${esc(r.team)}">Supprimer</button></span>` : ""}</li>`;
 
   // rename / delete, shared by the list and the report page
@@ -176,7 +180,16 @@
     await api(`/api/reports/${encodeURIComponent(file)}`, { method: "DELETE" });
     return true;
   }
+  async function refreshReport(file, team) {
+    if (!confirm(`Relancer l'analyse de « ${team} » avec les mêmes joueurs et réglages ? Le rapport sera remplacé par la version à jour (les games déjà téléchargées restent en cache).`)) return;
+    const { job } = await api(`/api/reports/${encodeURIComponent(file)}/refresh`, { method: "POST" });
+    location.hash = `#/job/${job}`;
+  }
   function bindReportActions(root, after) {
+    root.querySelectorAll("[data-refresh]").forEach((b) => (b.onclick = async (e) => {
+      e.preventDefault();
+      try { await refreshReport(b.dataset.refresh, b.dataset.team); } catch (err) { alert(err.message); }
+    }));
     root.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = async (e) => {
       e.preventDefault();
       try { if (await renameReport(b.dataset.rename, b.dataset.team)) after("rename"); } catch (err) { alert(err.message); }
@@ -191,7 +204,7 @@
     const list = await api("/api/reports");
     $app.innerHTML = `<div class="folder" style="max-width:860px">
       <h1 style="margin-bottom:14px">Rapports</h1>
-      ${list.length ? `<ul>${list.map((r) => reportLi(r, true)).join("")}</ul>` : `<p class="empty">Aucun rapport.</p>`}</div>`;
+      ${list.length ? `<ul>${list.map((r) => reportLi(r, "all")).join("")}</ul>` : `<p class="empty">Aucun rapport.</p>`}</div>`;
     bindReportActions($app, () => renderReports());
   }
 
@@ -248,6 +261,7 @@
         <div class="tools noprint">
           <button class="btn ghost" onclick="window.print()">Imprimer / PDF</button>
           <a class="btn ghost" href="#/h2h/${encodeURIComponent(file)}">Face à face…</a>
+          <button class="btn ghost" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchir</button>
           <div class="row-actions">
             <button class="linklike" data-rename="${esc(file)}" data-team="${esc(R.team)}">Renommer</button>
             <button class="linklike danger" data-delete="${esc(file)}" data-team="${esc(R.team)}">Supprimer</button>
@@ -255,7 +269,7 @@
         </div>
       </nav>
       <div id="doc">
-        ${R.outdated ? `<p class="err">Rapport créé par une ancienne version : certaines sections (signaux, smurfs analysés, face à face) sont vides. Relance l'analyse — les games sont en cache, c'est rapide.</p>` : ""}
+        ${R.outdated ? `<p class="err">Rapport créé par une ancienne version : certaines sections (signaux, smurfs analysés, face à face) sont vides. <button class="linklike" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchis le rapport</button> — les games sont en cache, c'est rapide.</p>` : ""}
         ${overview()}
         ${P.map((p) => playerPage(p) + smurfsOf(p).map(playerPage).join("")).join("")}
         ${R.botlane ? botlanePage() : ""}
@@ -271,7 +285,7 @@
     });
     hydrateMaps();
     spyToc();
-    bindReportActions(document.getElementById("toc"), (what) => {
+    bindReportActions(document.querySelector(".report"), (what) => {
       if (what === "delete") location.hash = "#/reports";
       else renderReport(file);
     });

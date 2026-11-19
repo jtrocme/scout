@@ -53,9 +53,26 @@ def status():
 @app.post("/api/analyze")
 def analyze():
     params = request.get_json(force=True)
+    params.pop("replace", None)  # only the refresh route may overwrite a report
+    params.pop("puuids", None)
     players = params.get("players") or {}
     if not any(v.strip() for v in players.values()):
         return jsonify({"error": "Ajoute au moins un joueur."}), 400
+    return jsonify({"job": start_job(params)})
+
+
+@app.post("/api/reports/<name>/refresh")
+def refresh_report(name):
+    """Run a saved report again with the same roster and settings, overwriting it."""
+    params = report.refresh_params(name)
+    if params is None:
+        abort(404)
+    if not any((v or "").strip() for v in params["players"].values()):
+        return jsonify({"error": "Ce rapport ne contient aucun joueur à relancer."}), 400
+    return jsonify({"job": start_job(params)})
+
+
+def start_job(params: dict) -> str:
     job_id = uuid.uuid4().hex[:10]
     job = {"id": job_id, "status": "running", "progress": {}, "started": time.time(), "report": None, "error": None}
     JOBS[job_id] = job
@@ -73,7 +90,7 @@ def analyze():
             job["status"] = "error"
 
     threading.Thread(target=work, daemon=True).start()
-    return jsonify({"job": job_id})
+    return job_id
 
 
 @app.get("/api/jobs/<job_id>")

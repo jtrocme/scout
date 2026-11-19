@@ -288,3 +288,5 @@ td.win { font-weight: 700; color: var(--good); }
 .row-actions { display: flex; gap: 14px; font-size: 13px; white-space: nowrap; }
 .toc .row-actions { justify-content: center; margin-top: 4px; }
 .linklike.danger:hover { color: var(--bad); }
+.linklike.icon { font-size: 18px; line-height: 1; padding: 4px 6px; border-radius: 4px; }
+.linklike.icon:hover { background: var(--mark-soft); }

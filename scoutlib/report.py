@@ -32,7 +32,10 @@ def run(params: dict, progress: Progress) -> dict:
     timelines = bool(params.get("timelines", True))
     team_name = (params.get("team") or "Équipe adverse").strip()
 
-    raw = collect(client, static, roster, days, max_games, timelines, progress)
+    raw = collect(client, static, roster, days, max_games, timelines, progress, params.get("puuids"))
+    # keep the current Riot IDs, so a renamed player shows (and refreshes) under the new name
+    roster = {r: f"{p['name']}#{p['tag']}" if r in raw["players"] else roster[r]
+              for r, p in ((r, raw["players"].get(r, {})) for r in ROLES)}
     now_ms = int(time.time() * 1000)
 
     progress.log("Analyse joueur par joueur…")
@@ -89,8 +92,12 @@ def run(params: dict, progress: Progress) -> dict:
                   "seconds": round(time.time() - t0), "games": len(raw["summaries"])},
     }
     REPORTS.mkdir(parents=True, exist_ok=True)
-    fname = f"{time.strftime('%Y%m%d-%H%M')}-{slugify(team_name)}.json"
-    (REPORTS / fname).write_text(json.dumps(report, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    # A refresh rewrites the same file so links and face-à-face picks keep working.
+    fname = params.get("replace") if _report_path(params.get("replace") or "") else None
+    fname = fname or f"{time.strftime('%Y%m%d-%H%M')}-{slugify(team_name)}.json"
+    tmp = REPORTS / (fname + ".tmp")
+    tmp.write_text(json.dumps(report, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(REPORTS / fname)
     report["file"] = fname
     progress.log(f"Terminé en {report['stats']['seconds']} s ({client.requests_made} requêtes, {client.cache_hits} lues en cache).")
     return report
@@ -167,6 +174,22 @@ def _report_path(name: str) -> Path | None:
     if fp.parent != REPORTS.resolve() or fp.suffix != ".json" or not fp.exists():
         return None
     return fp
+
+
+def refresh_params(name: str) -> dict | None:
+    """Rebuild the analysis parameters of a saved report, to run it again."""
+    fp = _report_path(name)
+    if fp is None:
+        return None
+    data = json.loads(fp.read_text(encoding="utf-8"))
+    prm = data.get("params") or {}
+    puuids = {p["role"]: p["puuid"] for p in data.get("players", []) if p.get("role") and p.get("puuid")}
+    return {
+        "players": data.get("roster") or {}, "puuids": puuids, "team": data.get("team"), "region": data.get("region", "euw"),
+        "days": prm.get("days", 90), "maxGames": prm.get("maxGames", 150),
+        "timelines": prm.get("timelines", True), "smurf": prm.get("smurf", "normal"),
+        "replace": name,
+    }
 
 
 def rename_report(name: str, team: str) -> bool:
