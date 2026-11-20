@@ -170,6 +170,7 @@
       ${actions === "refresh" ? `<button class="linklike icon" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}" title="Rafraîchir ce rapport" aria-label="Rafraîchir ${esc(r.team)}">↻</button>` : ""}
       ${actions === "all" ? `<span class="row-actions"><a class="linklike" href="#/draft/${encodeURIComponent(r.file)}">Draft</a>
         <button class="linklike" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}">Rafraîchir</button>
+        <button class="linklike" data-fullrefresh="${esc(r.file)}" data-team="${esc(r.team)}" title="Retélécharge toutes les games">Complet</button>
         <button class="linklike" data-rename="${esc(r.file)}" data-team="${esc(r.team)}">Renommer</button>
         <button class="linklike danger" data-delete="${esc(r.file)}" data-team="${esc(r.team)}">Supprimer</button></span>` : ""}</li>`;
 
@@ -190,10 +191,19 @@
     const { job } = await api(`/api/reports/${encodeURIComponent(file)}/refresh`, { method: "POST" });
     location.hash = `#/job/${job}`;
   }
+  async function fullRefreshReport(file, team) {
+    if (!confirm(`Rafraîchissement complet de « ${team} » : toutes les games sont retéléchargées (cache ignoré) puis le rapport est reconstruit avec la version actuelle de l'analyse.\n\nÀ utiliser si le rapport date d'une ancienne version ou d'une autre clé API. Beaucoup plus long qu'un rafraîchissement normal (plusieurs minutes, jusqu'à ~20 min avec une clé dev). Continuer ?`)) return;
+    const { job } = await api(`/api/reports/${encodeURIComponent(file)}/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ full: true }) });
+    location.hash = `#/job/${job}`;
+  }
   function bindReportActions(root, after) {
     root.querySelectorAll("[data-refresh]").forEach((b) => (b.onclick = async (e) => {
       e.preventDefault();
       try { await refreshReport(b.dataset.refresh, b.dataset.team); } catch (err) { alert(err.message); }
+    }));
+    root.querySelectorAll("[data-fullrefresh]").forEach((b) => (b.onclick = async (e) => {
+      e.preventDefault();
+      try { await fullRefreshReport(b.dataset.fullrefresh, b.dataset.team); } catch (err) { alert(err.message); }
     }));
     root.querySelectorAll("[data-rename]").forEach((b) => (b.onclick = async (e) => {
       e.preventDefault();
@@ -268,6 +278,7 @@
           <a class="btn ghost" href="#/h2h/${encodeURIComponent(file)}">Face à face…</a>
           <a class="btn ghost" href="#/draft/${encodeURIComponent(file)}">Draft contre eux</a>
           <button class="btn ghost" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchir</button>
+          <button class="btn ghost" data-fullrefresh="${esc(file)}" data-team="${esc(R.team)}" title="Retélécharge toutes les games et reconstruit le rapport">Rafraîchissement complet</button>
           <div class="row-actions">
             <button class="linklike" data-rename="${esc(file)}" data-team="${esc(R.team)}">Renommer</button>
             <button class="linklike danger" data-delete="${esc(file)}" data-team="${esc(R.team)}">Supprimer</button>
@@ -276,6 +287,7 @@
       </nav>
       <div id="doc">
         ${R.outdated ? `<p class="err">Rapport créé par une ancienne version : certaines sections (signaux, smurfs analysés, face à face) sont vides. <button class="linklike" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchis le rapport</button> — les games sont en cache, c'est rapide.</p>` : ""}
+        ${R.stats && R.stats.staleRefetched ? `<p class="caption">${R.stats.staleRefetched} games du cache venaient d'une autre clé API et ont été retéléchargées.</p>` : ""}
         ${overview()}
         ${P.map((p) => playerPage(p) + smurfsOf(p).map(playerPage).join("")).join("")}
         ${R.botlane ? botlanePage() : ""}
@@ -750,7 +762,7 @@
     const n = s.nearCount ?? s.nearMisses.length;
     if (!n) return `<span class="muted">0</span>`;
     const tip = (s.nearMisses || []).map((x) => `${date(x.start)} : ${x.smurfAfter ? "main" : "smurf"} finit ${hm(x.end)} → ${x.smurfAfter ? "smurf" : "main"} commence ${hm(x.start)} (${x.gap} min)`).join("\n");
-    return `<b class="${n >= 2 ? "bad" : ""}" title="${esc(tip)}">${n}</b>${s.nearTight ? ` <span class="sec">dont ${s.nearTight} ≤ 15 min</span>` : ""}`;
+    return `<b class="${n >= 2 ? "bad" : ""}" title="${esc(tip)}">${n}</b><div class="sec">${s.nearTight || 0} ≤ 15 min · ${s.nearClose != null ? s.nearClose - (s.nearTight || 0) : "–"} ≤ 30 · ${s.nearClose != null ? n - s.nearClose : "–"} ≤ 60</div>`;
   }
   function smurfPage() {
     const sm = R.smurf;
@@ -778,7 +790,7 @@
     }).join("");
     return `<section class="page" id="smurfs"><h2>Détection de smurfs</h2>
       <p class="legend">Méthode : comptes qui jouent avec les partenaires réguliers du joueur, jamais avec ni contre lui, jamais pendant ses games.
-      Indice principal : les <b>enchaînements</b> — une game du joueur se termine et une game du compte commence moins de 30 min après (ou l'inverse), sans jamais se chevaucher. Plusieurs enchaînements = très probablement la même personne.
+      Indice principal : les <b>enchaînements</b> — une game du joueur se termine et une game du compte commence moins d'une heure après (ou l'inverse), sans jamais se chevaucher. Un écart ≤ 15 min compte plein, ≤ 30 min un peu moins, ≤ 60 min peu — mais beaucoup d'enchaînements lâches finissent par peser. Plusieurs enchaînements = très probablement la même personne.
       Le reste du score : games avec ses partenaires, horaires, jours sans le joueur, niveau du compte, vérification des horaires (+10). Même rôle et mêmes champions ne font que renforcer le soupçon (un smurf sert souvent à s'entraîner sur d'autres champions).
       Chevauchements = games en même temps que le joueur / games comparées. ≥ 80 : analysé en détail.</p>
       ${sm.error ? `<p class="err">${esc(sm.error)}</p>` : ""}

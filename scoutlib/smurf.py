@@ -31,13 +31,17 @@ from .riot import RiotClient, RiotError
 
 DEPTH = {
     "off": None,
-    "quick": {"friends": 4, "games": 12, "verify": 3, "verify_games": 8},
-    "normal": {"friends": 6, "games": 20, "verify": 4, "verify_games": 12},
-    "deep": {"friends": 10, "games": 40, "verify": 6, "verify_games": 20},
+    # own = games of the player in other queues (ARAM, normals...) downloaded
+    # to see who he plays with and when; they are cached for next time.
+    "quick": {"friends": 4, "games": 12, "verify": 3, "verify_games": 8, "own": 30},
+    "normal": {"friends": 6, "games": 20, "verify": 4, "verify_games": 12, "own": 60},
+    "deep": {"friends": 10, "games": 40, "verify": 6, "verify_games": 20, "own": 100},
 }
 
-NEAR_MISS = 30 * 60_000   # gap between one account's game end and the other's start
-TIGHT = 15 * 60_000       # a gap this short counts fully; up to NEAR_MISS counts 0.6
+NEAR_MISS = 60 * 60_000   # gap between one account's game end and the other's start
+TIGHT = 15 * 60_000       # a gap this short counts fully (1.0)
+CLOSE = 30 * 60_000       # up to here counts 0.6; up to NEAR_MISS counts 0.3, so a
+                          # loose near miss alone means little but many of them add up
 
 
 def _hours(starts):
@@ -53,6 +57,14 @@ def _cosine(a, b):
     if not na or not nb:
         return None
     return sum(x * y for x, y in zip(a, b)) / (na * nb)
+
+
+def _any_game(match: dict) -> bool:
+    """Any 5v5 game counts to know who plays with whom and when: ARAM,
+    normals, ranked... (stats stay on Summoner's Rift, see valid_game)."""
+    info = match.get("info", {})
+    teams = {p.get("teamId") for p in info.get("participants", [])}
+    return len(info.get("participants", [])) == 10 and len(teams) == 2 and info.get("gameDuration", 0) >= 240
 
 
 def _overlaps(start, end, intervals, margin=60_000):
@@ -80,7 +92,7 @@ def _near_misses(intervals, my_intervals):
 
 
 def _near_weight(nm):
-    return sum(1.0 if x["gap"] * 60_000 <= TIGHT else 0.6 for x in nm)
+    return sum(1.0 if x["gap"] * 60_000 <= TIGHT else 0.6 if x["gap"] * 60_000 <= CLOSE else 0.3 for x in nm)
 
 
 def _score(c):
@@ -153,14 +165,26 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
                 id_cache[puuid] = []
         return id_cache[puuid]
 
-    def summary(mid):
+    # Games outside Summoner's Rift (ARAM...) are kept apart so they never
+    # leak into the stats of the report; here they only tell who and when.
+    off_rift: dict[str, dict] = {}
+
+    def summary(mid, puuid=None):
+        """`puuid`: whose match list the game comes from (to catch stale cache)."""
         if mid in summaries:
             return summaries[mid]
-        m = client.match(mid)
-        if not m or not valid_game(m):
+        if mid in off_rift:
+            return off_rift[mid]
+        m = client.match(mid, puuid)
+        if not m:
             return None
-        summaries[mid] = match_summary(m)
-        return summaries[mid]
+        if valid_game(m):
+            summaries[mid] = match_summary(m)
+            return summaries[mid]
+        if _any_game(m):
+            off_rift[mid] = {**match_summary(m), "offRift": True}
+            return off_rift[mid]
+        return None
 
     results = {}
     for role, p in players.items():
@@ -168,6 +192,15 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
         progress.log(f"Comptes secondaires : on regarde avec qui jouent les potes de {label}…")
         my_ids = set(p["ids"])
         my_sums = [summaries[m] for m in p["ids"] if m in summaries]
+        # his games in every queue: ARAM or normals with a friend count too
+        extra_ids = [m for m in ids_of(p["puuid"]) if m not in my_ids][: cfg["own"]]
+        if extra_ids:
+            progress.log(f"  {label} : {len(extra_ids)} games hors ranked (ARAM, normales…) pour les horaires et les partenaires")
+        for mid in extra_ids:
+            sm = summary(mid, p["puuid"])
+            if sm:
+                my_sums.append(sm)
+        my_ids |= set(extra_ids)
         my_intervals = [(s["start"], s["end"]) for s in my_sums]
         seen_with_me = {pl["puuid"] for s in my_sums for pl in s["players"]}
         my_days = {time.strftime("%Y-%m-%d", time.localtime(s["start"] / 1000)) for s in my_sums}
@@ -184,15 +217,25 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             together = sum(1 for s in my_sums for pl in s["players"]
                            if pl["puuid"] == other["puuid"] and pl["team"] == _team(s, p["puuid"]))
             friends.append((other["puuid"], f"{other['name']}#{other['tag']}", together, True))
+        # regular partners outside the roster, counted over all his queues
+        mates, mate_names = Counter(), {}
+        for sm in my_sums:
+            my_team = _team(sm, p["puuid"])
+            for pl in sm["players"]:
+                if pl["team"] == my_team and pl["puuid"] != p["puuid"] and pl["puuid"] not in roster:
+                    mates[pl["puuid"]] += 1
+                    mate_names[pl["puuid"]] = f"{pl['name']}#{pl['tag']}"
         for puuid, o in outsiders.items():
-            n = o["with"].get(p["puuid"], 0)
+            mates[puuid] = max(mates[puuid], o["with"].get(p["puuid"], 0))
+            mate_names.setdefault(puuid, o["name"])
+        for puuid, n in mates.items():
             if n >= 3:
-                friends.append((puuid, o["name"], n, False))
+                friends.append((puuid, mate_names[puuid], n, False))
         friends.sort(key=lambda f: (-f[3], -f[2]))
         roster_friends = [f for f in friends if f[3]]
         outside_friends = [f for f in friends if not f[3]][: cfg["friends"]]
 
-        cands = defaultdict(lambda: {"g": 0, "friends": Counter(), "roles": Counter(), "champs": Counter(),
+        cands = defaultdict(lambda: {"g": 0, "rift": 0, "friends": Counter(), "roles": Counter(), "champs": Counter(),
                                      "starts": [], "intervals": [], "name": "", "level": None, "w": 0,
                                      "seen": set()})
         for f_puuid, f_name, _, is_roster in roster_friends + outside_friends:
@@ -201,7 +244,7 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             else:
                 f_ids = [m for m in ids_of(f_puuid) if m not in my_ids][: cfg["games"]]
             for mid in f_ids:
-                s = summary(mid)
+                s = summary(mid, f_puuid)
                 if not s:
                     continue
                 fteam = _team(s, f_puuid)
@@ -215,8 +258,10 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
                     c["seen"].add(mid)
                     c["g"] += 1
                     c["w"] += pl["win"]
-                    c["roles"][pl["role"]] += 1
-                    c["champs"][pl["champ"]] += 1
+                    if not s.get("offRift"):  # ARAM picks say nothing about his pool or role
+                        c["rift"] += 1
+                        c["roles"][pl["role"]] += 1
+                        c["champs"][pl["champ"]] += 1
                     c["starts"].append(s["start"])
                     c["intervals"].append((s["start"], s["end"]))
                     c["name"] = f"{pl['name']}#{pl['tag']}"
@@ -232,8 +277,9 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             if any(_overlaps(s, e, my_intervals) for s, e in c["intervals"]):
                 cleared.append({"name": c["name"], "reason": "a joué en même temps que lui", "g": c["g"]})
                 continue
-            role_share = c["roles"].get(role, 0) / c["g"]
-            champ_share = sum(n for ch, n in c["champs"].items() if ch in my_pool) / c["g"]
+            rift = max(c["rift"], 1)
+            role_share = c["roles"].get(role, 0) / rift
+            champ_share = sum(n for ch, n in c["champs"].items() if ch in my_pool) / rift
             hours_sim = _cosine(my_hours, _hours(c["starts"])) if len(c["starts"]) >= 5 else None
             off_days = sum(1 for s in c["starts"]
                            if time.strftime("%Y-%m-%d", time.localtime(s / 1000)) not in my_days) / len(c["starts"])
@@ -241,7 +287,7 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             sus = {
                 "puuid": puuid, "name": c["name"], "g": c["g"], "wr": c["w"] / c["g"],
                 "friends": [[n, k] for n, k in c["friends"].most_common()],
-                "roleShare": role_share, "mainRole": c["roles"].most_common(1)[0][0],
+                "roleShare": role_share, "mainRole": c["roles"].most_common(1)[0][0] if c["roles"] else "ARAM",
                 "champShare": champ_share,
                 "commonChamps": [ch for ch, _ in c["champs"].most_common() if ch in my_pool][:5],
                 "champs": [[ch, n] for ch, n in c["champs"].most_common(5)],
@@ -255,7 +301,7 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
         suspects.sort(key=lambda x: -x["score"])
 
         # strict verification for the best candidates
-        tindex = _TimeIndex(summaries)
+        tindex = _TimeIndex({**summaries, **off_rift})
         kept = []
         for sus in suspects[: cfg["verify"]]:
             if sus["score"] < 30:
@@ -280,7 +326,7 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             checked = 0
             intervals = set(sus["_intervals"])
             for _, mid in risky[: cfg["verify_games"]]:
-                s = summary(mid)
+                s = summary(mid, sus["puuid"])
                 if not s:
                     continue
                 checked += 1
@@ -304,7 +350,8 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             s.pop("nFriends", None)
             s["nearTight"] = sum(1 for x in s["nearMisses"] if x["gap"] * 60_000 <= TIGHT)
             s["nearCount"] = len(s["nearMisses"])
-            s["nearMisses"] = s["nearMisses"][:6]
+            s["nearClose"] = sum(1 for x in s["nearMisses"] if x["gap"] * 60_000 <= CLOSE)
+            s["nearMisses"] = s["nearMisses"][:8]
         kept.sort(key=lambda x: -x["score"])
         results[role] = {
             "player": label,

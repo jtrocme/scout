@@ -5,11 +5,16 @@
   key both work without tuning.
 - Match and timeline payloads never change once a game is over, so they are
   cached on disk (gzip) forever. Everything else is fetched fresh.
+- PUUIDs are encrypted per Riot app: after switching to a key from another
+  app, every cached game holds PUUIDs nobody can be matched with any more.
+  So a game read for a given player must contain that player's PUUID;
+  otherwise it is downloaded again and the cached copy replaced.
 - The key is read from the RIOT_API_KEY env var or key.txt (gitignored).
 """
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import os
 import threading
@@ -145,6 +150,11 @@ class RiotClient:
         # account-v1 is global; it only accepts americas / asia / europe
         self.account_host = "asia" if self.regional == "sea" else self.regional
         self.key = key or load_key()
+        self.key_id = hashlib.sha1(self.key.encode()).hexdigest()[:10]
+        self.stale_refetched = 0
+        # full refresh: ignore the game cache, re-download each game once per run
+        self.force_refresh = False
+        self._refreshed: set[str] = set()
         self.limiter = RateLimiter()
         self.local = threading.local()
         self.requests_made = 0
@@ -193,10 +203,12 @@ class RiotClient:
         except Exception:
             known = {}
         hit = known.get(key)
-        if hit and time.time() - hit.get("_t", 0) < 86400:
+        # the PUUID depends on the key's app: never reuse one fetched with another key
+        if hit and time.time() - hit.get("_t", 0) < 86400 and hit.get("_k") == self.key_id:
             return hit
         data = self.get(self.account_host, f"/riot/account/v1/accounts/by-riot-id/{quote(name)}/{quote(tag)}")
         data["_t"] = time.time()
+        data["_k"] = self.key_id
         known[key] = data
         fp.write_text(json.dumps(known), encoding="utf-8")
         return data
@@ -246,16 +258,29 @@ class RiotClient:
             start += count
         return ids
 
-    def _cached(self, kind: str, match_id: str, path: str) -> Optional[dict]:
+    @staticmethod
+    def _has(data: dict, puuid: Optional[str]) -> bool:
+        return not puuid or puuid in ((data or {}).get("metadata") or {}).get("participants", [])
+
+    def _read(self, fp: Path) -> Optional[dict]:
+        try:
+            with gzip.open(fp, "rt", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def _cached(self, kind: str, match_id: str, path: str, puuid: Optional[str] = None) -> Optional[dict]:
         fp = CACHE / kind / f"{match_id}.json.gz"
-        if fp.exists():
-            try:
-                with gzip.open(fp, "rt", encoding="utf-8") as f:
-                    self.cache_hits += 1
-                    return json.load(f)
-            except Exception:
-                pass
+        forced = self.force_refresh and f"{kind}/{match_id}" not in self._refreshed
+        if fp.exists() and not forced:
+            data = self._read(fp)
+            if data is not None and self._has(data, puuid):
+                self.cache_hits += 1
+                return data
+            if data is not None:
+                self.stale_refetched += 1  # cached with a key from another app
         data = self.get(self.regional, path, allow_404=True)
+        self._refreshed.add(f"{kind}/{match_id}")
         if data is not None:
             tmp = fp.with_suffix(".tmp")
             with gzip.open(tmp, "wt", encoding="utf-8") as f:
@@ -263,11 +288,16 @@ class RiotClient:
             tmp.replace(fp)
         return data
 
-    def is_cached(self, kind: str, match_id: str) -> bool:
-        return (CACHE / kind / f"{match_id}.json.gz").exists()
+    def is_cached(self, kind: str, match_id: str, puuid: Optional[str] = None) -> bool:
+        fp = CACHE / kind / f"{match_id}.json.gz"
+        if not fp.exists() or (self.force_refresh and f"{kind}/{match_id}" not in self._refreshed):
+            return False
+        return not puuid or self._has(self._read(fp), puuid)
 
-    def match(self, match_id: str) -> Optional[dict]:
-        return self._cached("matches", match_id, f"/lol/match/v5/matches/{match_id}")
+    def match(self, match_id: str, puuid: Optional[str] = None) -> Optional[dict]:
+        """`puuid`: a player whose match list contains this game. If the cached
+        copy doesn't know him (other key), it is downloaded again."""
+        return self._cached("matches", match_id, f"/lol/match/v5/matches/{match_id}", puuid)
 
     def timeline(self, match_id: str) -> Optional[dict]:
         return self._cached("timelines", match_id, f"/lol/match/v5/matches/{match_id}/timeline")

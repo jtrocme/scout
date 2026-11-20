@@ -55,6 +55,7 @@ def analyze():
     params = request.get_json(force=True)
     params.pop("replace", None)  # only the refresh route may overwrite a report
     params.pop("puuids", None)
+    params.pop("fullRefresh", None)
     players = params.get("players") or {}
     if not any(v.strip() for v in players.values()):
         return jsonify({"error": "Ajoute au moins un joueur."}), 400
@@ -64,7 +65,8 @@ def analyze():
 @app.post("/api/reports/<name>/refresh")
 def refresh_report(name):
     """Run a saved report again with the same roster and settings, overwriting it."""
-    params = report.refresh_params(name)
+    body = request.get_json(silent=True) or {}
+    params = report.refresh_params(name, full=bool(body.get("full")))
     if params is None:
         abort(404)
     if not any((v or "").strip() for v in params["players"].values()):

@@ -26,6 +26,9 @@ def run(params: dict, progress: Progress) -> dict:
     t0 = time.time()
     static = get_static()
     client = RiotClient(region=params.get("region", "euw"))
+    client.force_refresh = bool(params.get("fullRefresh"))
+    if client.force_refresh:
+        progress.log("Rafraîchissement complet : toutes les games sont retéléchargées (cache ignoré).")
     roster = {r: params["players"].get(r, "") for r in ROLES}
     days = int(params.get("days", 90))
     max_games = int(params.get("maxGames", 150))
@@ -89,6 +92,7 @@ def run(params: dict, progress: Progress) -> dict:
             "spells": {sid: [s["name"], s["key"]] for sid, s in static.spells.items()},
         },
         "stats": {"requests": client.requests_made, "cacheHits": client.cache_hits,
+                  "staleRefetched": client.stale_refetched,
                   "seconds": round(time.time() - t0), "games": len(raw["summaries"])},
     }
     REPORTS.mkdir(parents=True, exist_ok=True)
@@ -176,7 +180,7 @@ def _report_path(name: str) -> Path | None:
     return fp
 
 
-def refresh_params(name: str) -> dict | None:
+def refresh_params(name: str, full: bool = False) -> dict | None:
     """Rebuild the analysis parameters of a saved report, to run it again."""
     fp = _report_path(name)
     if fp is None:
@@ -189,6 +193,7 @@ def refresh_params(name: str) -> dict | None:
         "days": prm.get("days", 90), "maxGames": prm.get("maxGames", 150),
         "timelines": prm.get("timelines", True), "smurf": prm.get("smurf", "normal"),
         "replace": name,
+        "fullRefresh": bool(full),
     }
 
 

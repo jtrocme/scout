@@ -36,14 +36,14 @@ def parse_riot_id(raw: str) -> tuple[str, str]:
 
 
 def fetch_games(client: RiotClient, ids: list[str], timelines: bool, progress: Progress, label: str,
-                workers: int = 4) -> dict[str, tuple[dict, Optional[dict]]]:
+                workers: int = 4, puuid: Optional[str] = None) -> dict[str, tuple[dict, Optional[dict]]]:
     """Download matches (+timelines) for a list of ids. Cached ones are free."""
     out: dict[str, tuple[dict, Optional[dict]]] = {}
     todo = list(ids)
     done = 0
 
     def one(mid):
-        m = client.match(mid)
+        m = client.match(mid, puuid)
         if not m or not valid_game(m):
             return mid, m, None
         t = client.timeline(mid) if timelines else None
@@ -60,10 +60,11 @@ def fetch_games(client: RiotClient, ids: list[str], timelines: bool, progress: P
     return out
 
 
-def estimate_requests(client: RiotClient, ids: list[str], timelines: bool) -> int:
+def estimate_requests(client: RiotClient, ids: list[str], timelines: bool, owner: Optional[dict] = None) -> int:
     n = 0
+    owner = owner or {}
     for mid in ids:
-        if not client.is_cached("matches", mid):
+        if not client.is_cached("matches", mid, owner.get(mid)):
             n += 1
         if timelines and not client.is_cached("timelines", mid):
             n += 1
@@ -87,7 +88,7 @@ def collect_extra(client: RiotClient, static: Static, p: dict, start_time: int, 
     load_profile(client, p, start_time, max_games)
     progress.state["players"][label] = {"games": f"0/{len(p['ids'])}"}
     progress.log(f"Téléchargement des games de {label} ({len(p['ids'])})…")
-    games = fetch_games(client, p["ids"], timelines, progress, label)
+    games = fetch_games(client, p["ids"], timelines, progress, label, puuid=p["puuid"])
     recs = []
     for mid, (m, t) in games.items():
         summaries.setdefault(mid, match_summary(m))
@@ -153,7 +154,11 @@ def collect(client: RiotClient, static: Static, roster: dict[str, str], days: in
         progress.state["players"][label] = {"games": f"0/{len(p['ids'])}"}
 
     all_ids = list(dict.fromkeys(mid for p in players.values() for mid in p["ids"]))
-    need = estimate_requests(client, all_ids, timelines)
+    owner = {}
+    for p in players.values():
+        for mid in p["ids"]:
+            owner.setdefault(mid, p["puuid"])
+    need = estimate_requests(client, all_ids, timelines, owner)
     rate = client.limiter.per_second()
     progress.set(total=len(all_ids), need=need, eta=round(need / max(rate, 0.01)))
     progress.log(f"{len(all_ids)} games à lire, dont {need} requêtes à faire "
@@ -164,7 +169,7 @@ def collect(client: RiotClient, static: Static, roster: dict[str, str], days: in
         label = f"{p['name']}#{p['tag']}"
         missing = [m for m in p["ids"] if m not in games]
         progress.log(f"Téléchargement des games de {label} ({len(missing)} nouvelles)…")
-        games.update(fetch_games(client, missing, timelines, progress, label))
+        games.update(fetch_games(client, missing, timelines, progress, label, puuid=p["puuid"]))
         progress.state["players"][label]["games"] = f"{len(p['ids'])}/{len(p['ids'])}"
         progress.set(done=len(games))
 

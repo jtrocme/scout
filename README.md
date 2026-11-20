@@ -58,6 +58,19 @@ comptent dans les bans conseillés.
 **Botlane**, **Premades**, **Compos en équipe**, **Détection de smurfs** (tableau
 des candidats avec chaque critère).
 
+## Rafraîchir un rapport
+
+- **Rafraîchir** : relance l'analyse avec les mêmes joueurs et réglages. Les
+  games déjà téléchargées viennent du cache, c'est rapide.
+- **Rafraîchissement complet** : retélécharge toutes les games (cache ignoré)
+  et reconstruit le rapport avec la version actuelle de l'analyse. Plus long
+  (jusqu'à ~20 min avec une clé dev).
+
+Changement de clé API : Riot chiffre les PUUID différemment selon l'app de la
+clé. Une game lue pour un joueur doit contenir son PUUID ; sinon elle vient
+d'une autre clé et est retéléchargée automatiquement (le rapport indique
+combien).
+
 ## Face à face
 
 Menu « Face à face » : choisir deux rapports existants (par exemple ta propre
@@ -92,7 +105,8 @@ Quand quelqu'un a un deuxième compte, ses potes jouent aussi avec. Pour chaque
 joueur P :
 
 1. On prend ses partenaires : les autres joueurs de la liste + les comptes
-   avec qui il a joué au moins 3 games.
+   avec qui il a joué au moins 3 games, **toutes files confondues** (ARAM,
+   normales, ranked : ces games servent aussi pour les horaires).
 2. On lit les games de ces partenaires **sans** P, et on note avec qui ils
    jouent.
 3. Un compte qui revient souvent avec eux, qui n'a jamais été dans une game de
@@ -101,8 +115,9 @@ joueur P :
 4. Indice principal : les **enchaînements**. La game de P finit à 20:10 et
    celle du candidat commence à 20:20 (ou l'inverse) : c'est ce que fait
    quelqu'un qui change de compte. Plusieurs enchaînements sans aucun
-   chevauchement = très probablement la même personne (≤ 15 min compte plein,
-   jusqu'à 30 min compte un peu moins).
+   chevauchement = très probablement la même personne. Poids selon l'écart :
+   ≤ 15 min compte plein, ≤ 30 min 0,6, ≤ 60 min 0,3 (un enchaînement lâche
+   seul pèse peu, mais s'il revient souvent il compte).
 5. Le reste du score : games et partenaires en commun, mêmes horaires, games
    les jours où P ne joue pas, niveau du compte. Même rôle et mêmes champions
    ne font qu'**ajouter** des points : un smurf sert souvent à entraîner
