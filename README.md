@@ -69,6 +69,23 @@ Menu « Face à face » : choisir deux rapports existants (par exemple ta propre
 - stats en stack (WR, objectifs pris en premier, profil de dégâts) ;
 - les games où les deux équipes se sont déjà croisées, avec le score.
 
+## Draft
+
+Menu « Draft » (ou bouton « Draft contre eux » dans un rapport) : choisir
+l'équipe adverse, puis pour chaque rôle ton pick et jusqu'à 5 bans. Pour chaque
+pick :
+- les champions **du pool de ton vis-à-vis** (main + smurfs détectés) qui
+  gagnent contre ton pick en lane, avec le WR du counter, l'écart d'or à 15 min
+  et ses stats à lui dessus (games au rôle, WR, KDA, games sur 30 jours) ;
+- son historique personnel contre ton champion ;
+- les autres counters fréquents hors de son pool.
+Les champions bannis ou déjà pris par toi sont grisés. Picks et bans sont
+gardés dans le navigateur, par rapport.
+
+Données de counter : fichiers de matchups publics de u.gg (ranked solo, monde,
+deux derniers patchs fusionnés, elo au choix), mis en cache dans `cache/ugg`.
+Aucune requête à l'API Riot.
+
 ## Détection de smurfs
 
 Quand quelqu'un a un deuxième compte, ses potes jouent aussi avec. Pour chaque
@@ -81,12 +98,21 @@ joueur P :
 3. Un compte qui revient souvent avec eux, qui n'a jamais été dans une game de
    P (ni avec, ni contre) et qui n'a jamais joué pendant une game de P est un
    candidat.
-4. Score : nombre de games et de partenaires en commun, même rôle, mêmes
-   champions, mêmes horaires, games les jours où P ne joue pas, niveau du compte.
-5. Les meilleurs candidats sont vérifiés : on récupère leur liste de games, on
+4. Indice principal : les **enchaînements**. La game de P finit à 20:10 et
+   celle du candidat commence à 20:20 (ou l'inverse) : c'est ce que fait
+   quelqu'un qui change de compte. Plusieurs enchaînements sans aucun
+   chevauchement = très probablement la même personne (≤ 15 min compte plein,
+   jusqu'à 30 min compte un peu moins).
+5. Le reste du score : games et partenaires en commun, mêmes horaires, games
+   les jours où P ne joue pas, niveau du compte. Même rôle et mêmes champions
+   ne font qu'**ajouter** des points : un smurf sert souvent à entraîner
+   d'autres champions en secret, ne pas les jouer n'est donc pas un contre-indice.
+   Sans aucun enchaînement, un compte plafonne vers 70 et n'atteint pas le seuil
+   d'analyse complète (80).
+6. Les meilleurs candidats sont vérifiés : on récupère leur liste de games, on
    estime l'heure de chacune à partir de son identifiant (les IDs de match
-   augmentent avec le temps), et on télécharge celles qui pourraient tomber
-   pendant une game de P pour comparer les horaires à la minute près.
+   augmentent avec le temps), et on télécharge celles qui tombent près d'une
+   game de P : pour écarter un chevauchement et trouver d'autres enchaînements.
 
 Trois niveaux de recherche (rapide / normale / poussée) selon le temps qu'on
 veut y mettre. Un score élevé reste un indice, pas une preuve.
@@ -102,6 +128,7 @@ scoutlib/extract.py une game -> stats d'un joueur (match + timeline)
 scoutlib/player.py  agrégats par joueur
 scoutlib/team.py    botlane, premades, games en stack
 scoutlib/smurf.py   comptes secondaires
+scoutlib/counters.py matchups de lane (u.gg) pour la draft
 scoutlib/insights.py signaux (indicateurs qui ressortent)
 scoutlib/report.py  orchestration, sauvegarde du rapport
 web/                interface (HTML/CSS/JS sans build)

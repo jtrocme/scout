@@ -67,6 +67,10 @@
       if (h.startsWith("/job/")) return renderJob(h.slice(5));
       if (h.startsWith("/r/")) return await renderReport(decodeURIComponent(h.slice(3)));
       if (h === "/reports") return await renderReports();
+      if (h.startsWith("/draft")) {
+        const f = h.slice(7);
+        return await (f ? renderDraft(decodeURIComponent(f)) : renderDraftPicker());
+      }
       if (h.startsWith("/h2h")) {
         const parts = h.slice(4).split("/").filter(Boolean).map(decodeURIComponent);
         return await (parts.length >= 2 ? renderH2H(parts[0], parts[1]) : renderH2HPicker(parts[0]));
@@ -164,7 +168,8 @@
       <div class="t">${esc(r.team)}</div>
       <div class="s">${r.generated ? dateLong(r.generated) : ""} · ${esc((r.region || "").toUpperCase())} · ${esc((r.players || []).join(", "))}</div></a>
       ${actions === "refresh" ? `<button class="linklike icon" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}" title="Rafraîchir ce rapport" aria-label="Rafraîchir ${esc(r.team)}">↻</button>` : ""}
-      ${actions === "all" ? `<span class="row-actions"><button class="linklike" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}">Rafraîchir</button>
+      ${actions === "all" ? `<span class="row-actions"><a class="linklike" href="#/draft/${encodeURIComponent(r.file)}">Draft</a>
+        <button class="linklike" data-refresh="${esc(r.file)}" data-team="${esc(r.team)}">Rafraîchir</button>
         <button class="linklike" data-rename="${esc(r.file)}" data-team="${esc(r.team)}">Renommer</button>
         <button class="linklike danger" data-delete="${esc(r.file)}" data-team="${esc(r.team)}">Supprimer</button></span>` : ""}</li>`;
 
@@ -261,6 +266,7 @@
         <div class="tools noprint">
           <button class="btn ghost" onclick="window.print()">Imprimer / PDF</button>
           <a class="btn ghost" href="#/h2h/${encodeURIComponent(file)}">Face à face…</a>
+          <a class="btn ghost" href="#/draft/${encodeURIComponent(file)}">Draft contre eux</a>
           <button class="btn ghost" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchir</button>
           <div class="row-actions">
             <button class="linklike" data-rename="${esc(file)}" data-team="${esc(R.team)}">Renommer</button>
@@ -738,6 +744,14 @@
   }
 
   // ---------- smurfs ----------
+  const hm = (ms) => new Date(ms).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  function nearCell(s) {
+    if (!s.nearMisses) return `<span class="muted" title="rapport antérieur : rafraîchis-le">–</span>`;
+    const n = s.nearCount ?? s.nearMisses.length;
+    if (!n) return `<span class="muted">0</span>`;
+    const tip = (s.nearMisses || []).map((x) => `${date(x.start)} : ${x.smurfAfter ? "main" : "smurf"} finit ${hm(x.end)} → ${x.smurfAfter ? "smurf" : "main"} commence ${hm(x.start)} (${x.gap} min)`).join("\n");
+    return `<b class="${n >= 2 ? "bad" : ""}" title="${esc(tip)}">${n}</b>${s.nearTight ? ` <span class="sec">dont ${s.nearTight} ≤ 15 min</span>` : ""}`;
+  }
   function smurfPage() {
     const sm = R.smurf;
     const ROLE_NAME = { TOP: "Top", JUNGLE: "Jungle", MIDDLE: "Mid", BOTTOM: "ADC", UTILITY: "Support" };
@@ -748,9 +762,10 @@
         <td>${deep.has(s.puuid) ? `<a href="#" onclick="document.querySelector('[id^=s-${r.toLowerCase()}-${s.puuid.slice(0, 8)}]').scrollIntoView({behavior:'smooth'});return false"><b>${esc(s.name)}</b></a>` : `<b>${esc(s.name)}</b>`}</td>
         <td class="n"><b class="${s.score >= 80 ? "bad" : ""}">${s.score}</b></td>
         <td class="n">${s.g}</td>
+        <td class="n">${nearCell(s)}</td>
         <td class="sec">${s.friends.map(([n, k]) => `${esc(n)} ×${k}`).join(", ")}</td>
         <td>${ROLE_NAME[s.mainRole] || s.mainRole} <span class="sec">${pct(s.roleShare)}</span></td>
-        <td>${s.commonChamps.length ? `<span class="chips">${s.commonChamps.map((c) => champImg(c, "ic sm")).join("")}</span> <span class="sec">${pct(s.champShare)}</span>` : `<span class="muted">0 %</span>`}</td>
+        <td>${s.commonChamps.length ? `<span class="chips">${s.commonChamps.map((c) => champImg(c, "ic sm")).join("")}</span> <span class="sec">${pct(s.champShare)}</span>` : `<span class="muted">aucun</span>`}${s.champs && s.champs.length ? `<div class="sec">joue : <span class="chips">${s.champs.map(([c]) => champImg(c, "ic sm")).join("")}</span></div>` : ""}</td>
         <td class="n">${s.hoursSim != null ? pct(s.hoursSim) : "–"}</td>
         <td class="n">${s.offDays != null ? pct(s.offDays) : "–"}</td>
         <td class="n">${s.level ?? "–"}</td>
@@ -758,12 +773,13 @@
       </tr>`).join("");
       const cleared = x.cleared.length ? `<p class="caption">Écartés : ${x.cleared.map((c) => `${esc(c.name)} (${esc(c.reason)})`).join(" · ")}</p>` : "";
       return `<div class="sub"><h3>${esc(x.player)}</h3><span class="muted">${ROLE_FR[r]} · partenaires analysés : ${x.friends.length}</span></div>
-        ${rows ? `<div class="tbl-wrap"><table><tr><th>Compte</th><th class="n">Score</th><th class="n">G avec ses partenaires</th><th>Partenaires</th><th>Rôle</th><th>Champions communs</th><th class="n">Horaires sim.</th><th class="n">Jours où il ne joue pas</th><th class="n">Niv.</th><th class="n">Chevauchements</th></tr>${rows}</table></div>` : `<p class="empty">Aucun candidat ≥ 50.</p>`}
+        ${rows ? `<div class="tbl-wrap"><table><tr><th>Compte</th><th class="n">Score</th><th class="n">G avec ses partenaires</th><th class="n">Enchaînements</th><th>Partenaires</th><th>Rôle</th><th>Champions communs</th><th class="n">Horaires sim.</th><th class="n">Jours où il ne joue pas</th><th class="n">Niv.</th><th class="n">Chevauchements</th></tr>${rows}</table></div>` : `<p class="empty">Aucun candidat ≥ 50.</p>`}
         ${cleared}`;
     }).join("");
     return `<section class="page" id="smurfs"><h2>Détection de smurfs</h2>
       <p class="legend">Méthode : comptes qui jouent avec les partenaires réguliers du joueur, jamais avec ni contre lui, jamais pendant ses games.
-      Score : games en commun, partenaires distincts, rôle, champions communs, horaires, jours sans le joueur, niveau du compte, vérification des horaires (+10).
+      Indice principal : les <b>enchaînements</b> — une game du joueur se termine et une game du compte commence moins de 30 min après (ou l'inverse), sans jamais se chevaucher. Plusieurs enchaînements = très probablement la même personne.
+      Le reste du score : games avec ses partenaires, horaires, jours sans le joueur, niveau du compte, vérification des horaires (+10). Même rôle et mêmes champions ne font que renforcer le soupçon (un smurf sert souvent à s'entraîner sur d'autres champions).
       Chevauchements = games en même temps que le joueur / games comparées. ≥ 80 : analysé en détail.</p>
       ${sm.error ? `<p class="err">${esc(sm.error)}</p>` : ""}
       ${blocks}
@@ -908,6 +924,159 @@
       ${met.length ? `<table><tr><th>Date</th><th>Côté ${esc(A.team)}</th><th>Côté ${esc(B.team)}</th><th>Coéquipiers</th><th>Résultat A</th></tr>
         ${met.slice(0, 20).map((g) => `<tr><td>${date(g.start)}</td><td>${esc(g.aSide.join(", "))}</td><td>${esc(g.bSide.join(", ") || "–")}</td><td>${esc(g.together.join(", ") || "–")}</td><td class="wl ${g.aWin ? "good" : "bad"}">${g.aWin ? "V" : "D"}</td></tr>`).join("")}</table>` : ""}
     </div>`;
+  }
+
+  // =====================================================================
+  // Draft against a scouted team
+  // =====================================================================
+  const TIER_FR = [["emerald_plus", "Émeraude+"], ["platinum_plus", "Platine+"], ["diamond_plus", "Diamant+"], ["master_plus", "Master+"], ["all", "Tous rangs"]];
+  const COUNTERS = {}; // "champ|role|tier" -> promise of /api/counters
+  const MIN_SHARE = 0.004; // ignore matchups seen in < 0.4 % of the lane's games (noise)
+
+  const fold = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]/gi, "").toLowerCase();
+
+  async function renderDraftPicker() {
+    const list = await api("/api/reports");
+    $app.innerHTML = `<div class="folder" style="max-width:860px"><h1>Draft</h1>
+      <p class="legend">Choisis l'équipe adverse (un rapport existant). Pour chaque rôle, indique ton pick : les counters que <b>ce joueur-là</b> peut sortir en réponse s'affichent, avec ses stats dessus.</p>
+      ${list.length ? `<ul>${list.map((r) => `<li><a href="#/draft/${encodeURIComponent(r.file)}"><div class="t">${esc(r.team)}</div>
+        <div class="s">${r.generated ? dateLong(r.generated) : ""} · ${esc((r.region || "").toUpperCase())} · ${esc((r.players || []).join(", "))}</div></a></li>`).join("")}</ul>`
+        : `<p class="empty">Aucun rapport : lance d'abord une analyse de l'équipe adverse.</p>`}</div>`;
+  }
+
+  async function renderDraft(file) {
+    $app.innerHTML = `<p class="muted">Chargement…</p>`;
+    R = upgrade(await api(`/api/reports/${encodeURIComponent(file)}`));
+    const key = `draft:${file}`;
+    const st = Object.assign({ picks: {}, bans: [null, null, null, null, null], tier: "emerald_plus" }, store.get(key, {}));
+    const save = () => store.set(key, st);
+    const byRole = Object.fromEntries(R.players.map((p) => [p.role, p]));
+    const smurfs = (role) => (R.smurfPlayers || []).filter((x) => x.smurfOf && x.smurfOf.role === role);
+    const champs = Object.entries(R.static.champs).map(([id, c]) => ({ id: +id, name: c[1], k: fold(c[1]), k2: fold(c[0]) })).sort((a, b) => a.name.localeCompare(b.name, "fr"));
+    const findChamp = (txt) => { const k = fold(txt); if (!k) return null; const c = champs.find((x) => x.k === k || x.k2 === k) || champs.filter((x) => x.k.startsWith(k)).sort((a, b) => a.k.length - b.k.length)[0]; return c ? c.id : null; };
+    const cname = (id) => champInfo(id)[1];
+
+    const picker = (attr, value, ph) => `<span class="cpick">${value != null ? champImg(value, "ic") : `<span class="ic"></span>`}<input ${attr} list="champlist" value="${value != null ? esc(cname(value)) : ""}" placeholder="${ph}" spellcheck="false"></span>`;
+
+    $app.innerHTML = `<div class="draft">
+      <div class="kicker"><a href="#/r/${encodeURIComponent(file)}">← rapport ${esc(R.team)}</a> · <a href="#/draft">autre équipe</a></div>
+      <h1>Draft contre ${esc(R.team)}</h1>
+      <p class="legend">Pour chaque rôle, choisis ton pick : on liste les champions qui le contrent en lane (stats u.gg, deux derniers patchs, monde) en commençant par ceux que <b>ton vis-à-vis joue vraiment</b>, avec ses stats dessus.
+        WR counter = winrate du champion adverse contre ton pick. Les champions bannis ou déjà pris ne peuvent plus sortir.</p>
+      <datalist id="champlist">${champs.map((c) => `<option value="${esc(c.name)}">`).join("")}</datalist>
+      <div class="draft-top">
+        <div class="field"><span>Bans (5 max)</span>
+          <div class="bans">${st.bans.map((b, i) => picker(`data-ban="${i}"`, b, "Ban " + (i + 1))).join("")}</div>
+          ${R.teamBans.length ? `<div class="sec small">Bans conseillés : ${R.teamBans.slice(0, 6).map((b) => `<button class="linklike chipbtn" data-addban="${b.champ}" title="${esc(b.player)} · ${b.g} g · ${pct(b.wr)}">${champImg(b.champ, "ic sm")}${esc(cname(b.champ))}</button>`).join(" ")}</div>` : ""}
+        </div>
+        <label class="field"><span>Elo des stats de counter</span><select id="tier">${TIER_FR.map(([v, l]) => `<option value="${v}" ${v === st.tier ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+        <div class="field"><span>&nbsp;</span><button class="btn ghost" id="reset">Tout effacer</button></div>
+      </div>
+      ${ROLES.map((r) => {
+        const p = byRole[r];
+        const subs = smurfs(r);
+        return `<section class="draft-role" id="d-${r}">
+          <div class="draft-head">
+            <div class="who"><div class="kicker">${ROLE_FR[r]}</div>
+              ${p ? `<b>${esc(p.name)}</b><span class="muted">#${esc(p.tag)}</span>${subs.map((x) => ` <span class="flag" title="compte secondaire probable">+ ${esc(x.name)}</span>`).join("")}` : `<span class="muted">pas de joueur à ce rôle</span>`}</div>
+            <label class="mine"><span class="muted small">Ton pick</span>${picker(`data-pick="${r}"`, st.picks[r], "Champion…")}</label>
+          </div>
+          <div class="draft-body" id="db-${r}"></div>
+        </section>`;
+      }).join("")}
+    </div>`;
+
+    const unavailable = () => {
+      const s = new Map();
+      st.bans.forEach((b) => b != null && s.set(b, "banni"));
+      ROLES.forEach((r) => st.picks[r] != null && s.set(st.picks[r], "pris par toi"));
+      return s;
+    };
+
+    // his pool in this role (main + smurf accounts), one row per champion
+    const pool = (role) => {
+      const out = new Map();
+      [byRole[role], ...smurfs(role)].filter(Boolean).forEach((p) => {
+        p.champions.forEach((c) => {
+          const rg = (c.roles || {})[role] || 0;
+          if (!rg) return;
+          const o = out.get(c.champ) || { champ: c.champ, rg: 0, g: 0, w: 0, g30: 0, kda: c.kda, accounts: [] };
+          o.rg += rg; o.g += c.g; o.w += (c.wr || 0) * c.g; o.g30 += c.g30 || 0;
+          o.accounts.push(p.smurfOf ? p.name : "main");
+          out.set(c.champ, o);
+        });
+      });
+      out.forEach((o) => (o.wr = o.g ? o.w / o.g : null));
+      return out;
+    };
+
+    async function fill(role) {
+      const el = document.getElementById(`db-${role}`);
+      const mine = st.picks[role];
+      const p = byRole[role];
+      if (mine == null) { el.innerHTML = `<p class="empty">Choisis ton champion pour voir ses counters.</p>`; return; }
+      el.innerHTML = `<p class="muted small">Counters de ${esc(cname(mine))}…</p>`;
+      const ck = `${mine}|${role}|${st.tier}`;
+      COUNTERS[ck] = COUNTERS[ck] || api(`/api/counters?champ=${mine}&role=${role}&tier=${st.tier}`).catch((e) => { delete COUNTERS[ck]; throw e; });
+      let data;
+      try { data = await COUNTERS[ck]; } catch (e) { el.innerHTML = `<p class="err">${esc(e.message)}</p>`; return; }
+      if (st.picks[role] !== mine) return; // changed while loading
+      const off = unavailable();
+      const rows = data.rows.filter((x) => x.share >= MIN_SHARE);
+      const byChamp = new Map(data.rows.map((x) => [x.champ, x]));
+      const his = pool(role);
+      const status = (c) => (off.has(c) ? `<span class="flag">${off.get(c)}</span>` : "");
+      const vsMe = p && (p.vsOppAll || []).find((x) => x.key === mine);
+
+      // his champions that beat my pick, most dangerous first
+      const theirs = [...his.values()].map((o) => ({ ...o, m: byChamp.get(o.champ) })).filter((o) => o.m && o.m.g >= 30);
+      const threats = theirs.filter((o) => o.m.wr > 0.5).sort((a, b) => (off.has(a.champ) - off.has(b.champ)) || (b.m.wr - 0.5) * Math.sqrt(b.rg) - (a.m.wr - 0.5) * Math.sqrt(a.rg));
+      const safe = theirs.filter((o) => o.m.wr <= 0.5).sort((a, b) => b.rg - a.rg).slice(0, 8);
+      const unknown = [...his.values()].filter((o) => !off.has(o.champ) && o.champ !== mine).filter((o) => !byChamp.get(o.champ) || byChamp.get(o.champ).g < 30).sort((a, b) => b.rg - a.rg);
+      const general = rows.filter((x) => !his.has(x.champ) && x.wr > 0.5).slice(0, 8);
+
+      const cwr = (x) => `<b class="${x.wr >= 0.53 ? "bad" : x.wr > 0.5 ? "" : "good"}">${pct(x.wr)}</b>`;
+      el.innerHTML = `
+        <p class="draft-line">${data.games ? `${esc(cname(mine))} ${ROLE_FR[role]} : <b>${data.games.toLocaleString("fr-FR")}</b> games analysées (${esc(data.patches.join(" + "))}, ${esc(TIER_FR.find((t) => t[0] === data.tier)[1])})` : `<span class="err">Aucune donnée u.gg pour ${esc(cname(mine))} ${ROLE_FR[role]}.</span>`}
+          ${p ? ` · ${esc(p.name)} contre ${esc(cname(mine))} : ${vsMe ? `<b>${vsMe.g}</b> g · ${wr(vsMe.wr, vsMe.g)}${vsMe.g ? ` · GD@15 <span class="${sgnCls(vsMe.gd15, 50)}">${signed(vsMe.gd15)}</span>` : ""}` : `<span class="muted">jamais affronté</span>`}` : ""}</p>
+        ${p ? `<div class="sub"><h3>Ses réponses possibles</h3><span class="muted">champions de son pool à ce rôle qui gagnent contre ${esc(cname(mine))}</span></div>
+          ${threats.length ? `<div class="tbl-wrap"><table><tr><th>Champion</th><th class="n">WR counter</th><th class="n">GD@15</th><th class="n">Échantillon</th><th class="n">Ses G au rôle</th><th class="n">Son WR</th><th class="n">KDA</th><th class="n">30 j</th><th></th></tr>
+            ${threats.map((o) => `<tr class="${off.has(o.champ) ? "gone" : ""}"><td>${champ(o.champ)}</td><td class="n">${cwr(o.m)}</td><td class="n ${sgnCls(-o.m.gd15, 100)}">${signed(o.m.gd15)}</td><td class="n sec">${o.m.g.toLocaleString("fr-FR")}</td>
+              <td class="n"><b>${o.rg}</b></td><td class="n">${wr(o.wr, o.g)}</td><td class="n">${num(o.kda, 2)}</td><td class="n">${o.g30 || `<span class="muted">0</span>`}</td>
+              <td>${status(o.champ)}${o.accounts.some((a) => a !== "main") ? ` <span class="sec">sur ${esc(o.accounts.filter((a) => a !== "main").join(", "))}</span>` : ""}</td></tr>`).join("")}</table></div>`
+            : `<p class="empty">Rien dans son pool ne contre ${esc(cname(mine))}.</p>`}
+          ${safe.length ? `<p class="caption">Dans son pool mais faibles contre ${esc(cname(mine))} : ${safe.map((o) => `${champImg(o.champ, "ic sm")}${esc(cname(o.champ))} <span class="good">${pct(o.m.wr)}</span> <span class="muted">(${o.rg} g)</span>`).join(" · ")}</p>` : ""}
+          ${unknown.length ? `<p class="caption">Trop peu de données de matchup : ${unknown.slice(0, 8).map((o) => `${esc(cname(o.champ))} (${o.rg} g)`).join(", ")}</p>` : ""}` : ""}
+        <div class="sub"><h3>Autres counters</h3><span class="muted">hors de son pool · au moins ${num(MIN_SHARE * 100)}${NB}% des games de la lane</span></div>
+        ${general.length ? `<div class="chips counters">${general.map((x) => `<span class="${off.has(x.champ) ? "gone" : ""}">${champ(x.champ, "ic sm")} ${cwr(x)} <span class="sec">${signed(x.gd15)} or</span>${status(x.champ)}</span>`).join("")}</div>` : `<p class="empty">–</p>`}`;
+    }
+
+    const fillAll = () => ROLES.forEach(fill);
+    const setIcon = (input, id) => {
+      const holder = input.parentElement;
+      holder.firstElementChild.outerHTML = id != null ? champImg(id, "ic") : `<span class="ic"></span>`;
+      if (id != null) input.value = cname(id);
+      input.classList.toggle("bad-input", id == null && !!input.value.trim());
+    };
+    $app.querySelectorAll("[data-pick]").forEach((inp) => (inp.onchange = () => {
+      const id = findChamp(inp.value);
+      st.picks[inp.dataset.pick] = id; save(); setIcon(inp, id); fillAll();
+    }));
+    $app.querySelectorAll("[data-ban]").forEach((inp) => (inp.onchange = () => {
+      const id = findChamp(inp.value);
+      st.bans[+inp.dataset.ban] = id; save(); setIcon(inp, id); fillAll();
+    }));
+    $app.querySelectorAll("[data-addban]").forEach((b) => (b.onclick = () => {
+      const id = +b.dataset.addban;
+      if (st.bans.includes(id)) return;
+      const i = st.bans.findIndex((x) => x == null);
+      if (i < 0) { alert("Déjà 5 bans."); return; }
+      st.bans[i] = id; save();
+      setIcon($app.querySelector(`[data-ban="${i}"]`), id); fillAll();
+    }));
+    document.getElementById("tier").onchange = (e) => { st.tier = e.target.value; save(); fillAll(); };
+    document.getElementById("reset").onclick = () => { if (confirm("Effacer picks et bans ?")) { store.set(key, {}); renderDraft(file); } };
+    fillAll();
   }
 
   route();
