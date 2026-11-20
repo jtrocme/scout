@@ -12,7 +12,7 @@ from pathlib import Path
 
 from flask import Flask, abort, jsonify, request, send_from_directory
 
-from scoutlib import report
+from scoutlib import counters, report
 from scoutlib.collect import Progress
 from scoutlib.riot import RiotClient, RiotError, load_key
 
@@ -99,6 +99,22 @@ def job(job_id):
     if not j:
         abort(404)
     return jsonify({**j, "elapsed": round(time.time() - j["started"])})
+
+
+@app.get("/api/counters")
+def counters_route():
+    """Lane matchups of one champion (u.gg), for the draft helper."""
+    try:
+        champ = int(request.args.get("champ", ""))
+    except ValueError:
+        return jsonify({"error": "Champion invalide."}), 400
+    role = request.args.get("role", "")
+    if role not in counters.ROLE_ID:
+        return jsonify({"error": "Rôle invalide."}), 400
+    try:
+        return jsonify(counters.matchups(champ, role, request.args.get("tier", "emerald_plus")))
+    except Exception as e:
+        return jsonify({"error": f"Counters indisponibles : {e}"}), 502
 
 
 @app.get("/api/reports")

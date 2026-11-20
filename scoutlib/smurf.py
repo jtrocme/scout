@@ -9,10 +9,15 @@ accounts. So for each scouted player P:
     queue with there.
  3. An account that plays a lot with P's friends but never with P, never
     in the same game as P, and never at the same time as P is a candidate.
- 4. Score it on role, champion pool, hours of play, account level, and
-    whether it plays on days P doesn't. The best candidates get a stricter
-    check: their own match list is pulled and any game that could overlap
-    one of P's games is downloaded to compare exact timestamps.
+ 4. The strongest clue is a "near miss": P's game ends at 20:10 and the
+    candidate's starts at 20:20 (or the other way round). One person
+    switching accounts does exactly that; two people almost never do it
+    again and again without ever overlapping. Hours of play, account level
+    and shared partners add to it. Same role / same champions only ever ADD
+    points: a smurf is most useful to find when it trains other champions.
+    The best candidates get a stricter check: their own match list is
+    pulled and every game close in time to one of P's games is downloaded,
+    both to rule out an overlap and to find more near misses.
 """
 from __future__ import annotations
 
@@ -26,10 +31,13 @@ from .riot import RiotClient, RiotError
 
 DEPTH = {
     "off": None,
-    "quick": {"friends": 4, "games": 12, "verify": 2, "verify_games": 5},
-    "normal": {"friends": 6, "games": 20, "verify": 3, "verify_games": 8},
-    "deep": {"friends": 10, "games": 40, "verify": 5, "verify_games": 15},
+    "quick": {"friends": 4, "games": 12, "verify": 3, "verify_games": 8},
+    "normal": {"friends": 6, "games": 20, "verify": 4, "verify_games": 12},
+    "deep": {"friends": 10, "games": 40, "verify": 6, "verify_games": 20},
 }
+
+NEAR_MISS = 30 * 60_000   # gap between one account's game end and the other's start
+TIGHT = 15 * 60_000       # a gap this short counts fully; up to NEAR_MISS counts 0.6
 
 
 def _hours(starts):
@@ -52,6 +60,47 @@ def _overlaps(start, end, intervals, margin=60_000):
         if start < e - margin and end > s + margin:
             return True
     return False
+
+
+def _near_misses(intervals, my_intervals):
+    """Candidate games that start shortly after one of P's games ends, or end
+    shortly before one starts. At most one near miss per candidate game."""
+    out = []
+    for s, e in intervals:
+        best = None
+        for ms, me in my_intervals:
+            for gap, first_end, second_start, after in ((s - me, me, s, True), (ms - e, e, ms, False)):
+                if -60_000 <= gap <= NEAR_MISS and (best is None or gap < best[0]):
+                    best = (gap, first_end, second_start, after)
+        if best:
+            out.append({"gap": max(0, round(best[0] / 60_000)), "end": best[1], "start": best[2],
+                        "smurfAfter": best[3]})
+    out.sort(key=lambda x: -x["start"])
+    return out
+
+
+def _near_weight(nm):
+    return sum(1.0 if x["gap"] * 60_000 <= TIGHT else 0.6 for x in nm)
+
+
+def _score(c):
+    """Total out of 100. Without any near miss a candidate tops out around 70,
+    so only accounts with near misses reach the full-analysis threshold."""
+    score = 0.0
+    score += min(c["g"], 12) / 12 * 12              # games with P's partners
+    score += min(c["nFriends"], 3) / 3 * 8          # distinct partners
+    score += 50 * (1 - 0.5 ** _near_weight(c["nearMisses"]))  # main clue: 3 tight ones ~ 44
+    score += (c["hoursSim"] if c["hoursSim"] is not None else 0.5) * 10
+    score += c["offDays"] * 5
+    lvl, my = c["level"], c["myLevel"]
+    if lvl is not None and not (my and lvl > my):
+        score += 10 if lvl < 80 else 7 if lvl < 150 else 3 if lvl < 250 else 0
+    # reinforcing only: never a penalty when they differ
+    score += max(0.0, c["champShare"] - 0.1) / 0.9 * 10
+    score += max(0.0, c["roleShare"] - 0.5) / 0.5 * 5
+    if c["verified"]:
+        score += 10
+    return min(100, round(score))
 
 
 def _game_id(mid: str) -> int:
@@ -189,18 +238,7 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             off_days = sum(1 for s in c["starts"]
                            if time.strftime("%Y-%m-%d", time.localtime(s / 1000)) not in my_days) / len(c["starts"])
             lvl = c["level"]
-            # A sub who fills the empty slot always matches the role, so role
-            # weighs little; same champions and a young account weigh a lot.
-            score = 0.0
-            score += min(c["g"], 12) / 12 * 15
-            score += min(n_friends, 3) / 3 * 10
-            score += role_share * 10
-            score += champ_share * 30
-            score += (hours_sim if hours_sim is not None else 0.5) * 10
-            score += off_days * 5
-            if lvl is not None and not (my_level and lvl > my_level):
-                score += 15 if lvl < 80 else 10 if lvl < 150 else 5 if lvl < 250 else 0
-            suspects.append({
+            sus = {
                 "puuid": puuid, "name": c["name"], "g": c["g"], "wr": c["w"] / c["g"],
                 "friends": [[n, k] for n, k in c["friends"].most_common()],
                 "roleShare": role_share, "mainRole": c["roles"].most_common(1)[0][0],
@@ -208,16 +246,19 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
                 "commonChamps": [ch for ch, _ in c["champs"].most_common() if ch in my_pool][:5],
                 "champs": [[ch, n] for ch, n in c["champs"].most_common(5)],
                 "hoursSim": hours_sim, "offDays": off_days, "level": lvl, "myLevel": my_level,
-                "score": round(score), "verified": None, "checked": 0,
-                "_starts": c["starts"],
-            })
+                "nFriends": n_friends, "nearMisses": _near_misses(c["intervals"], my_intervals),
+                "verified": None, "checked": 0,
+                "_starts": c["starts"], "_intervals": list(c["intervals"]),
+            }
+            sus["score"] = _score(sus)
+            suspects.append(sus)
         suspects.sort(key=lambda x: -x["score"])
 
         # strict verification for the best candidates
         tindex = _TimeIndex(summaries)
         kept = []
         for sus in suspects[: cfg["verify"]]:
-            if sus["score"] < 35:
+            if sus["score"] < 30:
                 kept.append(sus)
                 continue
             progress.log(f"Vérification de {sus['name']} (soupçonné pour {label})…")
@@ -237,6 +278,7 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
             risky.sort()
             overlap = False
             checked = 0
+            intervals = set(sus["_intervals"])
             for _, mid in risky[: cfg["verify_games"]]:
                 s = summary(mid)
                 if not s:
@@ -245,17 +287,24 @@ def detect(client: RiotClient, raw: dict, prem: dict, depth: str, progress: Prog
                 if _overlaps(s["start"], s["end"], my_intervals):
                     overlap = True
                     break
+                intervals.add((s["start"], s["end"]))
             sus["checked"] = checked + len(sus["_starts"])
             sus["totalGames"] = len(their_ids)
             if overlap:
                 cleared.append({"name": sus["name"], "reason": "a joué en même temps que lui (vérifié)", "g": sus["g"]})
                 continue
             sus["verified"] = True
-            sus["score"] = min(100, sus["score"] + 10)
+            sus["nearMisses"] = _near_misses(sorted(intervals), my_intervals)
+            sus["score"] = _score(sus)
             kept.append(sus)
         kept += suspects[cfg["verify"]:]
         for s in kept:
             s.pop("_starts", None)
+            s.pop("_intervals", None)
+            s.pop("nFriends", None)
+            s["nearTight"] = sum(1 for x in s["nearMisses"] if x["gap"] * 60_000 <= TIGHT)
+            s["nearCount"] = len(s["nearMisses"])
+            s["nearMisses"] = s["nearMisses"][:6]
         kept.sort(key=lambda x: -x["score"])
         results[role] = {
             "player": label,

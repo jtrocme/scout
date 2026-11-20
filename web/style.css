@@ -290,3 +290,28 @@ td.win { font-weight: 700; color: var(--good); }
 .linklike.danger:hover { color: var(--bad); }
 .linklike.icon { font-size: 18px; line-height: 1; padding: 4px 6px; border-radius: 4px; }
 .linklike.icon:hover { background: var(--mark-soft); }
+
+/* ---------- draft ---------- */
+.draft { max-width: 1100px; }
+.draft-top { display: grid; grid-template-columns: 1fr auto auto; gap: 18px; align-items: start; margin: 14px 0 6px; }
+.bans { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.cpick { display: inline-flex; align-items: center; border-bottom: 1px solid var(--rule); background: var(--card); padding: 3px 6px; }
+.cpick input { border: 0; background: transparent; outline: none; width: 130px; padding: 2px 0; }
+.cpick:focus-within { background: var(--mark-soft); }
+.cpick .ic { margin-right: 6px; }
+.cpick input.bad-input { color: var(--bad); }
+.chipbtn { color: var(--ink-2); margin-right: 8px; }
+.chipbtn:hover { color: var(--ink); text-decoration: underline; }
+.draft-role { border-top: 2px solid var(--ink); margin-top: 26px; padding-top: 10px; }
+.draft-head { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; flex-wrap: wrap; }
+.draft-head .who b { font: 600 22px/1.2 var(--serif); }
+.draft-head .mine { display: flex; flex-direction: column; gap: 3px; }
+.draft-head .mine .cpick input { width: 170px; font-size: 16px; }
+.draft-line { margin: 10px 0 0; color: var(--ink-2); }
+.counters { gap: 6px 18px; }
+tr.gone td, .counters .gone { opacity: .45; }
+tr.gone td:last-child { opacity: 1; }
+@media (max-width: 720px) {
+  .draft-top { grid-template-columns: 1fr; }
+  .cpick input { width: 110px; }
+}
