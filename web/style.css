@@ -273,6 +273,14 @@ tr.sig.t-bad td.n b { color: var(--bad); }
 tr.subrow td { background: var(--paper-2); font-size: 13.5px; }
 section.smurf-page { border-left: 3px solid var(--bad); padding-left: 18px; }
 section.smurf-page .kicker b { color: var(--bad); }
+/* smurfs added by hand */
+.sm-editor { border-left: 3px solid var(--bad); padding-left: 18px; }
+.sm-role { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 4px 16px; padding: 10px 0; border-bottom: 1px solid var(--rule); }
+.sm-role > [data-add] { grid-column: 2; justify-self: start; }
+.sm-who { padding-top: 7px; overflow-wrap: anywhere; }
+.sm-line { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.sm-line input { flex: 1; min-width: 0; border: 1px solid var(--rule); background: var(--card); color: var(--ink); padding: 7px 10px; border-radius: 3px; font-size: 15px; }
+@media (max-width: 640px) { .sm-role { grid-template-columns: minmax(0, 1fr); } .sm-role > [data-add] { grid-column: 1; } }
 .toc .tools a.btn { text-align: center; text-decoration: none; display: block; }
 
 /* head to head */

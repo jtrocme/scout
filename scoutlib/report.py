@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from . import insights, smurf, team
-from .collect import ROLES, Progress, collect, collect_extra
+from .collect import ROLES, Progress, collect, collect_extra, resolve_account
 from .stats import wr_block
 from .player import analyze
 from .riot import RiotClient
@@ -35,6 +35,8 @@ def run(params: dict, progress: Progress) -> dict:
     timelines = bool(params.get("timelines", True))
     team_name = (params.get("team") or "Équipe adverse").strip()
 
+    # checked first, so a typo in a smurf's Riot ID fails before the long download
+    manual = resolve_manual_smurfs(client, roster, params.get("manualSmurfs"), progress)
     raw = collect(client, static, roster, days, max_games, timelines, progress, params.get("puuids"))
     # keep the current Riot IDs, so a renamed player shows (and refreshes) under the new name
     roster = {r: f"{p['name']}#{p['tag']}" if r in raw["players"] else roster[r]
@@ -64,7 +66,7 @@ def run(params: dict, progress: Progress) -> dict:
             progress.log(f"Détection de smurfs interrompue : {e}")
             sm = {"enabled": True, "error": str(e), "players": {}}
 
-    smurf_players = analyse_smurfs(client, static, raw, sm, params, days, max_games, timelines, now_ms, progress)
+    smurf_players = analyse_smurfs(client, static, raw, sm, manual, max_games, timelines, now_ms, progress)
 
     prem.pop("_outsiders", None)
     prem.pop("_roster_role", None)
@@ -74,7 +76,8 @@ def run(params: dict, progress: Progress) -> dict:
         "team": team_name,
         "region": params.get("region", "euw"),
         "generated": now_ms,
-        "params": {"days": days, "maxGames": max_games, "timelines": timelines, "smurf": depth},
+        "params": {"days": days, "maxGames": max_games, "timelines": timelines, "smurf": depth,
+                   "manualSmurfs": manual_params(manual)},
         "roster": {r: roster[r] for r in ROLES if roster[r]},
         "players": analysed,
         "smurfPlayers": smurf_players,
@@ -110,32 +113,94 @@ def run(params: dict, progress: Progress) -> dict:
 SMURF_THRESHOLD = 80
 
 
-def analyse_smurfs(client, static, raw, sm, params, days, max_games, timelines, now_ms, progress) -> list:
-    """Accounts scored >= 80 get the same full analysis as a roster player."""
-    out = []
-    if not sm.get("enabled"):
-        return out
-    start_time = raw["start_time"]
-    for role, res in (sm.get("players") or {}).items():
-        main = raw["players"].get(role)
-        for sus in res.get("suspects", []):
-            if sus["score"] < SMURF_THRESHOLD:
-                continue
-            name, _, tag = sus["name"].rpartition("#")
-            progress.log(f"Analyse complète de {sus['name']} (compte secondaire probable de {main['name']})…")
-            extra = {"role": role, "puuid": sus["puuid"], "name": name.strip(), "tag": tag}
+ROLE_FR = {"TOP": "Top", "JUNGLE": "Jungle", "MIDDLE": "Mid", "BOTTOM": "ADC", "UTILITY": "Support"}
+
+
+def manual_smurf_entries(raw) -> dict[str, list[dict]]:
+    """Smurfs added by hand, as sent by the UI or saved in a report:
+    role -> list of "Name#TAG" or {"id": "Name#TAG", "puuid": ...}."""
+    out: dict[str, list[dict]] = {}
+    for role, items in (raw or {}).items():
+        if role not in ROLES:
+            continue
+        if isinstance(items, (str, dict)):
+            items = [items]
+        for it in items or []:
+            e = {"id": it} if isinstance(it, str) else {"id": str(it.get("id") or ""), "puuid": it.get("puuid")}
+            if e["id"].strip():
+                out.setdefault(role, []).append(e)
+    return out
+
+
+def resolve_manual_smurfs(client, roster: dict, raw, progress: Progress) -> dict[str, list[dict]]:
+    """role -> [{puuid, name, tag}] for the smurfs added by hand. Raises ValueError
+    (shown to the user) for a malformed or unknown Riot ID."""
+    out: dict[str, list[dict]] = {}
+    seen = set()
+    for role, items in manual_smurf_entries(raw).items():
+        if not (roster.get(role) or "").strip():
+            raise ValueError(f"Smurf « {items[0]['id'].strip()} » : il n'y a pas de joueur {ROLE_FR[role]} dans l'équipe.")
+        for e in items:
             try:
-                collect_extra(client, static, extra, start_time, max_games, timelines, progress, raw["summaries"])
-            except Exception as e:
-                progress.log(f"  impossible : {e}")
-                continue
-            if not extra["records"]:
-                continue
-            a = analyze(extra, static, role, now_ms)
-            a["signals"] = insights.player_signals(a)
-            a["smurfOf"] = {"role": role, "name": f"{main['name']}#{main['tag']}", "score": sus["score"]}
-            a["combined"] = combined_pool(main["records"], extra["records"])
-            out.append(a)
+                acc = resolve_account(client, e["id"], progress, e.get("puuid"))
+            except ValueError as err:
+                raise ValueError(f"Smurf {ROLE_FR[role]} : {err}") from None
+            if acc["puuid"] not in seen:
+                seen.add(acc["puuid"])
+                out.setdefault(role, []).append(acc)
+    return out
+
+
+def manual_params(manual: dict) -> dict:
+    """What the report keeps of the manual smurfs, to show and refresh them."""
+    return {role: [{"id": f"{a['name']}#{a['tag']}", "puuid": a["puuid"]} for a in accs]
+            for role, accs in manual.items()}
+
+
+def analyse_smurfs(client, static, raw, sm, manual, max_games, timelines, now_ms, progress) -> list:
+    """Accounts scored >= 80, and the ones added by hand, get the same full
+    analysis as a roster player."""
+    picks: dict[str, dict] = {}  # puuid -> account to analyse
+    if sm.get("enabled"):
+        for role, res in (sm.get("players") or {}).items():
+            for sus in res.get("suspects", []):
+                if sus["score"] >= SMURF_THRESHOLD:
+                    name, _, tag = sus["name"].rpartition("#")
+                    picks.setdefault(sus["puuid"], {"role": role, "puuid": sus["puuid"], "name": name.strip(),
+                                                    "tag": tag, "score": sus["score"]})
+    for role, accs in (manual or {}).items():
+        for acc in accs:  # the user's word wins over the detection
+            picks[acc["puuid"]] = {"role": role, **acc, "score": None, "manual": True}
+    roster_puuids = {p["puuid"] for p in raw["players"].values()}
+
+    out = []
+    start_time = raw["start_time"]
+    for pick in picks.values():
+        role = pick["role"]
+        main = raw["players"].get(role)
+        label = f"{pick['name']}#{pick['tag']}"
+        if main is None or pick["puuid"] in roster_puuids:
+            if pick.get("manual"):
+                progress.log(f"{label} ignoré : c'est déjà un joueur de l'équipe.")
+            continue
+        why = "ajouté manuellement comme smurf" if pick.get("manual") else "compte secondaire probable"
+        progress.log(f"Analyse complète de {label} ({why} de {main['name']})…")
+        extra = {"role": role, "puuid": pick["puuid"], "name": pick["name"], "tag": pick["tag"]}
+        try:
+            collect_extra(client, static, extra, start_time, max_games, timelines, progress, raw["summaries"])
+        except Exception as e:
+            progress.log(f"  impossible : {e}")
+            continue
+        if not extra["records"]:
+            progress.log(f"  aucune game classée sur la période pour {label}.")
+            continue
+        a = analyze(extra, static, role, now_ms)
+        a["signals"] = insights.player_signals(a)
+        a["smurfOf"] = {"role": role, "name": f"{main['name']}#{main['tag']}", "score": pick["score"],
+                        "manual": bool(pick.get("manual"))}
+        a["combined"] = combined_pool(main["records"], extra["records"])
+        out.append(a)
+    out.sort(key=lambda a: ROLES.index(a["role"]))
     return out
 
 
@@ -192,6 +257,7 @@ def refresh_params(name: str, full: bool = False) -> dict | None:
         "players": data.get("roster") or {}, "puuids": puuids, "team": data.get("team"), "region": data.get("region", "euw"),
         "days": prm.get("days", 90), "maxGames": prm.get("maxGames", 150),
         "timelines": prm.get("timelines", True), "smurf": prm.get("smurf", "normal"),
+        "manualSmurfs": prm.get("manualSmurfs") or {},
         "replace": name,
         "fullRefresh": bool(full),
     }

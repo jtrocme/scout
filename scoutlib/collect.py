@@ -118,6 +118,25 @@ def find_by_puuid(client: RiotClient, puuid: str, old_id: str, progress: Progres
     return acc
 
 
+def resolve_account(client: RiotClient, rid: str, progress: Progress, puuid: str | None = None) -> dict:
+    """Riot ID 'Name#TAG' -> {puuid, name, tag}. With a known PUUID (refresh of a
+    report), a player who renamed is still found. Raises ValueError with a message
+    for the user when the ID is malformed or unknown."""
+    name, tag = parse_riot_id(rid)
+    if not name or not tag:
+        raise ValueError(f"« {rid.strip()} » : il faut le format Pseudo#TAG")
+    progress.log(f"Recherche de {name}#{tag}…")
+    acc = find_by_puuid(client, puuid, rid, progress) if puuid else None
+    if acc is None:
+        try:
+            acc = client.account(name, tag)
+        except RiotError as e:
+            if e.status in (400, 404):
+                raise ValueError(f"{name}#{tag} n'existe pas sur ce serveur")
+            raise
+    return {"puuid": acc["puuid"], "name": (acc.get("gameName") or name).strip(), "tag": acc.get("tagLine", tag)}
+
+
 def collect(client: RiotClient, static: Static, roster: dict[str, str], days: int, max_games: int,
             timelines: bool, progress: Progress, puuids: dict[str, str] | None = None) -> dict:
     """roster: role -> 'Name#TAG'. puuids: role -> PUUID when refreshing a report,
@@ -128,23 +147,7 @@ def collect(client: RiotClient, static: Static, roster: dict[str, str], days: in
         rid = (roster.get(role) or "").strip()
         if not rid:
             continue
-        name, tag = parse_riot_id(rid)
-        progress.log(f"Recherche de {name}#{tag}…")
-        acc = find_by_puuid(client, puuids[role], rid, progress) if (puuids or {}).get(role) else None
-        if acc is None:
-            try:
-                acc = client.account(name, tag)
-            except RiotError as e:
-                if e.status == 404:
-                    raise ValueError(f"{name}#{tag} n'existe pas sur ce serveur")
-                raise
-        puuid = acc["puuid"]
-        players[role] = {
-            "role": role,
-            "puuid": puuid,
-            "name": (acc.get("gameName") or name).strip(),
-            "tag": acc.get("tagLine", tag),
-        }
+        players[role] = {"role": role, **resolve_account(client, rid, progress, (puuids or {}).get(role))}
 
     # profile data (cheap: 4 requests per player)
     for role, p in players.items():
