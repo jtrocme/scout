@@ -277,6 +277,7 @@
           <button class="btn ghost" onclick="window.print()">Imprimer / PDF</button>
           <a class="btn ghost" href="#/h2h/${encodeURIComponent(file)}">Face à face…</a>
           <a class="btn ghost" href="#/draft/${encodeURIComponent(file)}">Draft contre eux</a>
+          <button class="btn ghost" id="add-smurfs" title="Ajouter à la main les comptes secondaires des joueurs, puis relancer l'analyse">Ajouter des smurfs</button>
           <button class="btn ghost" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchir</button>
           <button class="btn ghost" data-fullrefresh="${esc(file)}" data-team="${esc(R.team)}" title="Retélécharge toutes les games et reconstruit le rapport">Rafraîchissement complet</button>
           <div class="row-actions">
@@ -286,6 +287,7 @@
         </div>
       </nav>
       <div id="doc">
+        <div id="smurf-editor" class="noprint" hidden></div>
         ${R.outdated ? `<p class="err">Rapport créé par une ancienne version : certaines sections (signaux, smurfs analysés, face à face) sont vides. <button class="linklike" data-refresh="${esc(file)}" data-team="${esc(R.team)}">Rafraîchis le rapport</button> — les games sont en cache, c'est rapide.</p>` : ""}
         ${R.stats && R.stats.staleRefetched ? `<p class="caption">${R.stats.staleRefetched} games du cache venaient d'une autre clé API et ont été retéléchargées.</p>` : ""}
         ${overview()}
@@ -303,6 +305,7 @@
     });
     hydrateMaps();
     spyToc();
+    document.getElementById("add-smurfs").onclick = () => openSmurfEditor(file);
     bindReportActions(document.querySelector(".report"), (what) => {
       if (what === "delete") location.hash = "#/reports";
       else renderReport(file);
@@ -322,6 +325,72 @@
       p.log = p.log || [];
     });
     return rep;
+  }
+
+  const smurfTag = (sm) => (sm.manual ? "smurf · ajouté manuellement" : `smurf ${sm.score}`);
+
+  // ---------- smurfs added by hand ----------
+  // One block per player of the report, one input per smurf account (add / remove),
+  // then the report is run again with them.
+  function openSmurfEditor(file) {
+    const box = document.getElementById("smurf-editor");
+    if (!box.hidden) { box.hidden = true; return; }
+    const saved = (R.params && R.params.manualSmurfs) || {};
+    const roles = ROLES.filter((r) => R.roster && R.roster[r]);
+    const line = (v = "") => `<div class="sm-line"><input value="${esc(v)}" placeholder="Pseudo#TAG" spellcheck="false" aria-label="Riot ID du smurf">
+        <button type="button" class="linklike icon" data-del title="Retirer ce compte" aria-label="Retirer ce compte">×</button></div>`;
+    box.innerHTML = `<section class="page sm-editor"><h2>Ajouter des smurfs</h2>
+      <p class="caption">Indique les comptes secondaires que tu connais (format Pseudo#TAG), autant que nécessaire par joueur.
+        L'analyse est relancée : chaque smurf a sa propre page juste après son joueur, avec le pool combiné, et ses champions comptent dans les bans conseillés.</p>
+      <form id="sm-form" autocomplete="off">
+        ${roles.map((r) => `<div class="sm-role" data-role="${r}">
+          <div class="sm-who"><b>${ROLE_FR[r]}</b> <span class="muted">${esc(R.roster[r])}</span></div>
+          <div class="sm-lines">${(saved[r] || []).map((x) => line(x.id || x)).join("")}</div>
+          <button type="button" class="linklike" data-add>+ ajouter un smurf</button>
+        </div>`).join("")}
+        <div class="go">
+          <button class="btn" type="submit">Relancer l'analyse avec ces smurfs</button>
+          <button class="btn ghost" type="button" data-cancel>Annuler</button>
+        </div>
+        <div class="err" id="sm-err"></div>
+      </form></section>`;
+    box.hidden = false;
+    const form = document.getElementById("sm-form");
+    form.onclick = (e) => {
+      const t = e.target;
+      if (t.matches("[data-add]")) {
+        const lines = t.closest(".sm-role").querySelector(".sm-lines");
+        lines.insertAdjacentHTML("beforeend", line());
+        lines.lastElementChild.querySelector("input").focus();
+      } else if (t.matches("[data-del]")) t.closest(".sm-line").remove();
+      else if (t.matches("[data-cancel]")) box.hidden = true;
+    };
+    // a player with no smurf yet starts with one empty line, ready to type in
+    form.querySelectorAll(".sm-lines").forEach((l) => { if (!l.children.length) l.insertAdjacentHTML("beforeend", line()); });
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const err = document.getElementById("sm-err");
+      const manualSmurfs = {};
+      const bad = [];
+      form.querySelectorAll(".sm-role").forEach((b) => {
+        const ids = [...b.querySelectorAll("input")].map((i) => i.value.trim()).filter(Boolean);
+        ids.forEach((v) => { if (!/^[^#]+#[^#]+$/.test(v)) bad.push(v); });
+        if (ids.length) manualSmurfs[b.dataset.role] = ids;
+      });
+      if (bad.length) { err.textContent = `Format Pseudo#TAG attendu : ${bad.join(", ")}`; return; }
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true; btn.textContent = "Vérification des comptes…"; err.textContent = "";
+      try {
+        const { job } = await api(`/api/reports/${encodeURIComponent(file)}/refresh`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ manualSmurfs }) });
+        location.hash = `#/job/${job}`;
+      } catch (ex) {
+        err.textContent = ex.message;
+        btn.disabled = false; btn.textContent = "Relancer l'analyse avec ces smurfs";
+      }
+    };
+    box.scrollIntoView({ behavior: "smooth", block: "start" });
+    const first = form.querySelector("input");
+    if (first) first.focus({ preventScroll: true });
   }
 
   const pid = (p) => (p.smurfOf ? `s-${p.role.toLowerCase()}-${p.puuid.slice(0, 8)}` : `p-${p.role.toLowerCase()}`);
@@ -347,7 +416,7 @@
     const SM = R.smurfPlayers || [];
     const queues = [...new Set(P.flatMap((p) => Object.keys(p.queues)))].join(" + ");
     const row = (p, smurf) => `<tr class="${smurf ? "subrow" : ""}">
-          <td>${smurf ? "↳ " : ""}<a href="#" onclick="document.getElementById('${pid(p)}').scrollIntoView({behavior:'smooth'});return false">${esc(p.name)}<span class="muted">#${esc(p.tag)}</span></a>${smurf ? ` <span class="flag">smurf ${p.smurfOf.score}</span>` : ""}</td>
+          <td>${smurf ? "↳ " : ""}<a href="#" onclick="document.getElementById('${pid(p)}').scrollIntoView({behavior:'smooth'});return false">${esc(p.name)}<span class="muted">#${esc(p.tag)}</span></a>${smurf ? ` <span class="flag">${smurfTag(p.smurfOf)}</span>` : ""}</td>
           <td>${smurf ? "" : ROLE_FR[p.role]}</td>
           <td>${soloRank(p)}</td>
           <td class="n">${p.games}</td>
@@ -361,7 +430,7 @@
     return `<section class="page cover" id="ensemble">
       <h1>${esc(R.team)}</h1>
       <p class="meta">${dateLong(R.generated)} · ${esc(queues)} · ${R.params.days} j · ${esc(R.region.toUpperCase())}</p>
-      <p class="legend">GD / CSD / XPD : écart avec le vis-à-vis à 15 min · WR vert ≥ 55 %, rouge ≤ 45 % (≥ 3 games) · ↳ smurf : compte secondaire probable (score ≥ 80), analysé comme un titulaire.</p>
+      <p class="legend">GD / CSD / XPD : écart avec le vis-à-vis à 15 min · WR vert ≥ 55 %, rouge ≤ 45 % (≥ 3 games) · ↳ smurf : compte secondaire probable (score ≥ 80) ou ajouté manuellement, analysé comme un titulaire.</p>
 
       <div class="tbl-wrap"><table>
         <tr><th>Joueur</th><th>Rôle</th><th>Rang</th><th class="n">G</th><th class="n">WR</th><th class="n">KDA</th><th class="n">GD@15</th><th class="n">Morts &lt;14</th><th>Champions</th></tr>
@@ -411,7 +480,7 @@
     return `<section class="page ${sm ? "smurf-page" : ""}" id="${pid(p)}">
       <div class="phead">
         <div>
-          <div class="kicker">${sm ? `Smurf probable de <b>${esc(sm.name)}</b> · score ${sm.score}/100 · ` : ""}${ROLE_FR[p.role]}${p.level ? ` · niv. ${p.level}` : ""}</div>
+          <div class="kicker">${sm ? (sm.manual ? `Smurf de <b>${esc(sm.name)}</b> · ajouté manuellement · ` : `Smurf probable de <b>${esc(sm.name)}</b> · score ${sm.score}/100 · `) : ""}${ROLE_FR[p.role]}${p.level ? ` · niv. ${p.level}` : ""}</div>
           <h2>${esc(p.name)}<span class="tag">#${esc(p.tag)}</span></h2>
           <div class="line">${ranks || `<span class="muted">Non classé</span>`}</div>
           <div class="line"><span>${spells || "–"}</span></div>

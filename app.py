@@ -71,6 +71,14 @@ def refresh_report(name):
         abort(404)
     if not any((v or "").strip() for v in params["players"].values()):
         return jsonify({"error": "Ce rapport ne contient aucun joueur à relancer."}), 400
+    if "manualSmurfs" in body:
+        # smurfs added by hand: check the Riot IDs now, so a typo shows up at once
+        try:
+            client = RiotClient(params["region"])
+            manual = report.resolve_manual_smurfs(client, params["players"], body["manualSmurfs"], Progress())
+        except (ValueError, RiotError, RuntimeError) as e:
+            return jsonify({"error": str(e)}), 400
+        params["manualSmurfs"] = report.manual_params(manual)
     return jsonify({"job": start_job(params)})
 
 

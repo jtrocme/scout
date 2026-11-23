@@ -55,6 +55,15 @@ probables (score ≥ 80) apparaissent sous leur joueur.
 juste après son joueur, avec le pool combiné main + smurf. Ses champions
 comptent dans les bans conseillés.
 
+**Smurfs ajoutés à la main** : si tu connais un compte secondaire que la
+détection n'a pas trouvé, clique sur **Ajouter des smurfs** dans le rapport,
+entre un ou plusieurs Pseudo#TAG par joueur (+ / × pour ajouter ou retirer une
+ligne) puis **Relancer l'analyse avec ces smurfs**. Ils sont traités comme un
+smurf à 80+ (page, pool combiné, bans) et marqués « ajouté manuellement » au
+lieu d'un score. Ils sont gardés dans le rapport : un rafraîchissement les
+reprend, et rouvrir le bouton permet de les modifier. Un Riot ID inconnu est
+signalé tout de suite, avant de relancer.
+
 **Botlane**, **Premades**, **Compos en équipe**, **Détection de smurfs** (tableau
 des candidats avec chaque critère).
 
